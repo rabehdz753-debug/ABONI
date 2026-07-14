@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+<meta charset="UTF-8">
+<title>مدينة الحرامي - لعبة سيارات 3D</title>
+<style>
+  html,body{margin:0;padding:0;overflow:hidden;background:#111;font-family:Arial,Helvetica,sans-serif;}
+  #gameCanvas{display:block;}
+  #hud{position:fixed;top:10px;left:10px;color:#fff;text-shadow:0 0 4px #000,0 0 4px #000;font-size:18px;z-index:5;}
+  #hud div{margin-bottom:4px;}
+  #score{font-size:26px;font-weight:bold;color:#ffd700;}
+  #speed{font-size:16px;color:#9fdcff;}
+  #minimap{position:fixed;top:10px;right:10px;border:2px solid rgba(255,255,255,0.5);border-radius:8px;background:rgba(0,0,0,0.4);z-index:5;}
+  #instructions{position:fixed;inset:0;background:rgba(0,0,0,0.85);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:20;text-align:center;padding:20px;box-sizing:border-box;}
+  #instructions h1{color:#ffd700;font-size:36px;margin-bottom:10px;}
+  #instructions p{font-size:16px;line-height:1.8;max-width:500px;}
+  #startBtn{margin-top:20px;padding:14px 40px;font-size:20px;background:#ffd700;border:none;border-radius:8px;cursor:pointer;font-weight:bold;}
+  #startBtn:active{transform:scale(0.97);}
+  #touchControls{position:fixed;bottom:20px;left:0;right:0;display:flex;justify-content:space-between;padding:0 20px;z-index:10;user-select:none;pointer-events:none;}
+  .padBtn{width:70px;height:70px;background:rgba(255,255,255,0.15);border:2px solid rgba(255,255,255,0.4);border-radius:50%;color:#fff;font-size:28px;display:flex;align-items:center;justify-content:center;pointer-events:auto;touch-action:none;}
+  .padBtn:active{background:rgba(255,255,255,0.4);}
+  #steerPad{display:flex;gap:15px;}
+  #crashFlash{position:fixed;inset:0;background:red;opacity:0;pointer-events:none;transition:opacity 0.1s;z-index:15;}
+  #wanted{font-size:24px;letter-spacing:2px;color:#ff5555;}
+  #bustedMsg{position:fixed;top:40%;left:50%;transform:translate(-50%,-50%);color:#fff;background:rgba(150,0,0,0.85);padding:20px 40px;border-radius:10px;font-size:28px;font-weight:bold;opacity:0;transition:opacity 0.3s;z-index:25;pointer-events:none;text-align:center;}
+</style>
+</head>
+<body>
+
+<div id="instructions">
+  <h1>🚗 مدينة الحرامي</h1>
+  <p>
+    اجمع أكبر عدد من العملات الذهبية 🟡 وأنت تتجول بسيارتك في المدينة!<br><br>
+    <b>W / ↑</b> : تسريع &nbsp;&nbsp; <b>S / ↓</b> : تراجع/فرملة<br>
+    <b>A / ←</b> : يسار &nbsp;&nbsp; <b>D / →</b> : يمين<br>
+    <b>R</b> : إعادة ضبط السيارة إذا علقت<br><br>
+    انتبه من الاصطدام بالمباني والسيارات الأخرى! 🏢<br>
+    الاصطدام بسيارات المرور يرفع مستوى المطلوبية 🚨 وتلحق بيك الشرطة!
+  </p>
+  <button id="startBtn">ابدأ اللعب</button>
+</div>
+
+<div id="crashFlash"></div>
+
+<div id="hud">
+  <div id="score">💰 النقاط: 0</div>
+  <div id="speed">السرعة: 0 كم/س</div>
+  <div id="wanted">🚨 المطلوبية: ☆☆☆☆☆</div>
+</div>
+
+<div id="bustedMsg">🚔 تم القبض عليك!</div>
+
+<canvas id="minimap" width="160" height="160"></canvas>
+
+<div id="touchControls">
+  <div id="steerPad">
+    <div class="padBtn" id="btnLeft">◀</div>
+    <div class="padBtn" id="btnRight">▶</div>
+  </div>
+  <div id="movePad" style="display:flex;gap:15px;">
+    <div class="padBtn" id="btnBack">▼</div>
+    <div class="padBtn" id="btnFwd">▲</div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ================= إعداد المشهد ================= */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x8ec9f0);
+scene.fog = new THREE.Fog(0x8ec9f0, 60, 220);
+
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.1, 500);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+const canvasHolder = document.createElement('div');
+renderer.domElement.id = 'gameCanvas';
+document.body.appendChild(renderer.domElement);
+
+window.addEventListener('resize', ()=>{
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* إضاءة */
+const ambient = new THREE.AmbientLight(0xffffff, 0.65);
+scene.add(ambient);
+const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+sun.position.set(80, 120, 60);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048,2048);
+sun.shadow.camera.left = -150; sun.shadow.camera.right = 150;
+sun.shadow.camera.top = 150; sun.shadow.camera.bottom = -150;
+scene.add(sun);
+
+/* ================= بناء المدينة ================= */
+const gridSize = 8;      // 8x8 أحياء
+const cellSize = 30;     // حجم كل خلية
+const roadWidth = 10;
+const buildingSize = cellSize - roadWidth; // 20
+const half = gridSize*cellSize/2; // 120
+
+// الأرض (الطريق)
+const groundGeo = new THREE.PlaneGeometry(gridSize*cellSize+40, gridSize*cellSize+40);
+const groundMat = new THREE.MeshStandardMaterial({color:0x3a3a3f});
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.rotation.x = -Math.PI/2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// خطوط الطرق الصفراء المتقطعة
+const lineMat = new THREE.MeshBasicMaterial({color:0xffee66});
+function addRoadLines(){
+  for(let i=0;i<=gridSize;i++){
+    const pos = (i - gridSize/2)*cellSize;
+    for(let s=-half; s<half; s+=6){
+      const seg1 = new THREE.Mesh(new THREE.PlaneGeometry(0.3,3), lineMat);
+      seg1.rotation.x = -Math.PI/2;
+      seg1.position.set(pos, 0.02, s+1.5);
+      scene.add(seg1);
+      const seg2 = new THREE.Mesh(new THREE.PlaneGeometry(3,0.3), lineMat);
+      seg2.rotation.x = -Math.PI/2;
+      seg2.position.set(s+1.5, 0.02, pos);
+      scene.add(seg2);
+    }
+  }
+}
+addRoadLines();
+
+// المباني
+const buildings = []; // {x,z,halfSize}
+const buildingColors = [0xc0665a,0x7893b0,0xb0a37c,0x8fae7d,0xb08fae,0xa0a0a0,0xd9b26f];
+for(let i=0;i<gridSize;i++){
+  for(let j=0;j<gridSize;j++){
+    const bx = (i-gridSize/2)*cellSize + cellSize/2;
+    const bz = (j-gridSize/2)*cellSize + cellSize/2;
+    const height = 6 + Math.random()*34;
+    const color = buildingColors[Math.floor(Math.random()*buildingColors.length)];
+    const geo = new THREE.BoxGeometry(buildingSize, height, buildingSize);
+    const mat = new THREE.MeshStandardMaterial({color});
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(bx, height/2, bz);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+    // سطح داكن
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(buildingSize+0.2,0.4,buildingSize+0.2), new THREE.MeshStandardMaterial({color:0x2b2b2b}));
+    roof.position.set(bx, height+0.2, bz);
+    scene.add(roof);
+    buildings.push({x:bx, z:bz, r: buildingSize/2});
+  }
+}
+
+/* ================= السيارة ================= */
+function buildCar(bodyColor){
+  const car = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2,0.7,4), new THREE.MeshStandardMaterial({color:bodyColor}));
+  body.position.y = 0.6; body.castShadow = true;
+  car.add(body);
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.6,0.6,2), new THREE.MeshStandardMaterial({color:0x222233}));
+  cabin.position.set(0,1.15,-0.2); cabin.castShadow = true;
+  car.add(cabin);
+  const wheelGeo = new THREE.CylinderGeometry(0.4,0.4,0.3,16);
+  const wheelMat = new THREE.MeshStandardMaterial({color:0x111111});
+  const wheelPositions = [[-1,0.4,1.3],[1,0.4,1.3],[-1,0.4,-1.3],[1,0.4,-1.3]];
+  wheelPositions.forEach(p=>{
+    const w = new THREE.Mesh(wheelGeo, wheelMat);
+    w.rotation.z = Math.PI/2;
+    w.position.set(p[0],p[1],p[2]);
+    w.castShadow = true;
+    car.add(w);
+  });
+  const lightGeo = new THREE.BoxGeometry(0.3,0.2,0.1);
+  const lightMat = new THREE.MeshStandardMaterial({color:0xffffcc, emissive:0xffffaa, emissiveIntensity:0.6});
+  [[-0.7,0.6,2.0],[0.7,0.6,2.0]].forEach(p=>{
+    const l = new THREE.Mesh(lightGeo, lightMat);
+    l.position.set(p[0],p[1],p[2]);
+    car.add(l);
+  });
+  return car;
+}
+
+const player = {
+  mesh: buildCar(0xdd3333),
+  x:0, z:0, angle:0, speed:0
+};
+player.mesh.position.set(0,0,0);
+scene.add(player.mesh);
+
+/* سيارات مرور (AI) */
+const traffic = [];
+const trafficColors = [0x4477cc,0x33aa66,0xffaa22,0xaaaaaa];
+function spawnTraffic(n){
+  for(let k=0;k<n;k++){
+    const horizontal = Math.random()<0.5;
+    const lineIndex = Math.floor(Math.random()*(gridSize+1));
+    const linePos = (lineIndex-gridSize/2)*cellSize;
+    const dir = Math.random()<0.5 ? 1 : -1;
+    const car = buildCar(trafficColors[k % trafficColors.length]);
+    scene.add(car);
+    const t = {
+      mesh:car, horizontal, linePos, dir,
+      x: horizontal ? -half + Math.random()*gridSize*cellSize : linePos,
+      z: horizontal ? linePos : -half + Math.random()*gridSize*cellSize,
+      speed: 6+Math.random()*4
+    };
+    traffic.push(t);
+  }
+}
+spawnTraffic(10);
+
+/* ================= الشرطة ================= */
+const policeCars = [];
+let wantedLevel = 0;
+let wantedDecayTimer = 0;
+let catchTimer = 0;
+let trafficCrimeCooldown = 0;
+let sirenTimer = 0.3;
+
+function buildPoliceCar(){
+  const car = buildCar(0xf2f2f2);
+  const bar = new THREE.Mesh(new THREE.BoxGeometry(1,0.25,0.5), new THREE.MeshStandardMaterial({color:0xff0000, emissive:0xff0000, emissiveIntensity:1}));
+  bar.position.set(0,1.55,-0.2);
+  bar.name = 'lightbar';
+  car.add(bar);
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(2.05,0.16,4.05), new THREE.MeshStandardMaterial({color:0x1144ff}));
+  stripe.position.set(0,0.6,0);
+  car.add(stripe);
+  return car;
+}
+
+function spawnPolice(){
+  const spawnAngle = Math.random()*Math.PI*2;
+  const dist = 55+Math.random()*40;
+  const px = Math.max(-half+3, Math.min(half-3, player.x + Math.sin(spawnAngle)*dist));
+  const pz = Math.max(-half+3, Math.min(half-3, player.z + Math.cos(spawnAngle)*dist));
+  const mesh = buildPoliceCar();
+  scene.add(mesh);
+  policeCars.push({mesh, x:px, z:pz, angle:0, speed:0});
+}
+
+function despawnPolice(){
+  const p = policeCars.pop();
+  if(p) scene.remove(p.mesh);
+}
+
+function registerCrime(amount){
+  wantedLevel = Math.min(5, wantedLevel + amount);
+  wantedDecayTimer = 0;
+}
+
+function syncPolice(){
+  const desired = Math.round(wantedLevel);
+  while(policeCars.length < desired) spawnPolice();
+  while(policeCars.length > desired) despawnPolice();
+}
+
+function busted(){
+  wantedLevel = 0;
+  wantedDecayTimer = 0;
+  catchTimer = 0;
+  score = Math.max(0, score-20);
+  scoreEl.textContent = '💰 النقاط: ' + score;
+  const msg = document.getElementById('bustedMsg');
+  msg.style.opacity = 1;
+  setTimeout(()=> msg.style.opacity = 0, 1800);
+}
+
+const wantedEl = document.getElementById('wanted');
+const policeMaxSpeed = 24;
+
+function updateWanted(dt){
+  if(wantedLevel>0){
+    wantedDecayTimer += dt;
+    if(wantedDecayTimer > 8){
+      wantedLevel = Math.max(0, wantedLevel-1);
+      wantedDecayTimer = 0;
+    }
+  }
+  syncPolice();
+  const stars = Math.round(wantedLevel);
+  wantedEl.textContent = '🚨 المطلوبية: ' + '★'.repeat(stars) + '☆'.repeat(5-stars);
+}
+
+function updatePolice(dt, elapsed){
+  let anyClose = false;
+  for(const p of policeCars){
+    const dx = player.x-p.x, dz = player.z-p.z;
+    const dist = Math.sqrt(dx*dx+dz*dz);
+    const desiredAngle = Math.atan2(dx, dz);
+    let diff = desiredAngle - p.angle;
+    while(diff > Math.PI) diff -= Math.PI*2;
+    while(diff < -Math.PI) diff += Math.PI*2;
+    p.angle += Math.max(-2.4*dt, Math.min(2.4*dt, diff));
+    const speedTarget = Math.abs(diff) < 1.2 ? policeMaxSpeed : policeMaxSpeed*0.5;
+    p.speed += (speedTarget - p.speed)*Math.min(1, dt*2);
+
+    const fx = Math.sin(p.angle), fz = Math.cos(p.angle);
+    let nx = p.x + fx*p.speed*dt;
+    let nz = p.z + fz*p.speed*dt;
+    nx = Math.max(-half+2, Math.min(half-2, nx));
+    nz = Math.max(-half+2, Math.min(half-2, nz));
+
+    const carRadius = 2.1;
+    for(const b of buildings){
+      const closestX = Math.max(b.x-b.r, Math.min(nx, b.x+b.r));
+      const closestZ = Math.max(b.z-b.r, Math.min(nz, b.z+b.r));
+      const bdx = nx-closestX, bdz = nz-closestZ;
+      const bdist = Math.sqrt(bdx*bdx+bdz*bdz);
+      if(bdist < carRadius){
+        const push = (carRadius-bdist)+0.05;
+        const len = bdist||0.001;
+        nx += (bdx/len)*push;
+        nz += (bdz/len)*push;
+        p.speed *= 0.5;
+      }
+    }
+
+    p.x = nx; p.z = nz;
+    p.mesh.position.set(p.x,0,p.z);
+    p.mesh.rotation.y = p.angle;
+
+    const lightbar = p.mesh.getObjectByName('lightbar');
+    if(lightbar) lightbar.material.color.set(Math.floor(elapsed*4)%2===0 ? 0xff0000 : 0x1144ff);
+
+    if(dist < 3.2) anyClose = true;
+  }
+
+  if(anyClose && wantedLevel>0){
+    catchTimer += dt;
+    if(catchTimer > 1.3) busted();
+  } else {
+    catchTimer = Math.max(0, catchTimer - dt*2);
+  }
+
+  if(wantedLevel>0){
+    sirenTimer -= dt;
+    if(sirenTimer<=0){
+      beep(Math.floor(performance.now()/300)%2===0 ? 900:600, 0.18, 'sine');
+      sirenTimer = 0.32;
+    }
+  }
+}
+
+/* عملات ذهبية */
+const coins = [];
+const coinGeo = new THREE.TorusGeometry(0.7,0.25,8,16);
+const coinMat = new THREE.MeshStandardMaterial({color:0xffd700, emissive:0x664400, emissiveIntensity:0.4});
+function randomIntersection(){
+  const i = Math.floor(Math.random()*(gridSize+1));
+  const j = Math.floor(Math.random()*(gridSize+1));
+  return { x:(i-gridSize/2)*cellSize, z:(j-gridSize/2)*cellSize };
+}
+function spawnCoin(){
+  const pos = randomIntersection();
+  const mesh = new THREE.Mesh(coinGeo, coinMat);
+  mesh.position.set(pos.x, 1.2, pos.z);
+  mesh.rotation.x = Math.PI/2;
+  scene.add(mesh);
+  coins.push({mesh, x:pos.x, z:pos.z});
+}
+for(let i=0;i<16;i++) spawnCoin();
+
+/* ================= الصوت ================= */
+let audioCtx;
+function beep(freq, dur, type='sine'){
+  try{
+    if(!audioCtx) audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = type; o.frequency.value = freq;
+    g.gain.setValueAtTime(0.15, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime+dur);
+  }catch(e){}
+}
+
+/* ================= التحكم ================= */
+const keys = {forward:false, backward:false, left:false, right:false};
+window.addEventListener('keydown', e=>{
+  if(['ArrowUp','w','W'].includes(e.key)) keys.forward = true;
+  if(['ArrowDown','s','S'].includes(e.key)) keys.backward = true;
+  if(['ArrowLeft','a','A'].includes(e.key)) keys.left = true;
+  if(['ArrowRight','d','D'].includes(e.key)) keys.right = true;
+  if(e.key==='r' || e.key==='R'){ player.x=0; player.z=0; player.angle=0; player.speed=0; }
+});
+window.addEventListener('keyup', e=>{
+  if(['ArrowUp','w','W'].includes(e.key)) keys.forward = false;
+  if(['ArrowDown','s','S'].includes(e.key)) keys.backward = false;
+  if(['ArrowLeft','a','A'].includes(e.key)) keys.left = false;
+  if(['ArrowRight','d','D'].includes(e.key)) keys.right = false;
+});
+function bindTouch(id, keyName){
+  const el = document.getElementById(id);
+  el.addEventListener('touchstart', e=>{e.preventDefault(); keys[keyName]=true;});
+  el.addEventListener('touchend', e=>{e.preventDefault(); keys[keyName]=false;});
+  el.addEventListener('mousedown', ()=> keys[keyName]=true);
+  el.addEventListener('mouseup', ()=> keys[keyName]=false);
+  el.addEventListener('mouseleave', ()=> keys[keyName]=false);
+}
+bindTouch('btnFwd','forward');
+bindTouch('btnBack','backward');
+bindTouch('btnLeft','left');
+bindTouch('btnRight','right');
+
+/* ================= المتغيرات ================= */
+let score = 0;
+const scoreEl = document.getElementById('score');
+const speedEl = document.getElementById('speed');
+const crashFlash = document.getElementById('crashFlash');
+
+const maxSpeed = 32, maxReverse = 12, accel = 24, friction = 14, brakeForce = 40, turnRate = 2.4;
+
+/* ================= حلقة اللعبة ================= */
+const clock = new THREE.Clock();
+let running = false;
+
+function updatePlayer(dt){
+  if(keys.forward) player.speed += accel*dt;
+  else if(keys.backward) player.speed -= accel*dt;
+  else {
+    if(player.speed>0) player.speed = Math.max(0, player.speed - friction*dt);
+    else if(player.speed<0) player.speed = Math.min(0, player.speed + friction*dt);
+  }
+  if(keys.backward && player.speed>0) player.speed -= brakeForce*dt;
+  if(keys.forward && player.speed<0) player.speed += brakeForce*dt;
+
+  player.speed = Math.max(-maxReverse, Math.min(maxSpeed, player.speed));
+
+  const speedFactor = Math.min(1, Math.abs(player.speed)/8 + 0.35);
+  const turnDir = player.speed>=0 ? 1 : -1;
+  if(Math.abs(player.speed)>0.05){
+    if(keys.left) player.angle += turnRate*dt*speedFactor*turnDir;
+    if(keys.right) player.angle -= turnRate*dt*speedFactor*turnDir;
+  }
+
+  const fx = Math.sin(player.angle), fz = Math.cos(player.angle);
+  let nx = player.x + fx*player.speed*dt;
+  let nz = player.z + fz*player.speed*dt;
+
+  // حدود العالم
+  nx = Math.max(-half+2, Math.min(half-2, nx));
+  nz = Math.max(-half+2, Math.min(half-2, nz));
+
+  // تصادم مع المباني (دائرة مقابل مربع)
+  const carRadius = 2.1;
+  let collided = false;
+  for(const b of buildings){
+    const closestX = Math.max(b.x-b.r, Math.min(nx, b.x+b.r));
+    const closestZ = Math.max(b.z-b.r, Math.min(nz, b.z+b.r));
+    const dx = nx-closestX, dz = nz-closestZ;
+    const dist = Math.sqrt(dx*dx+dz*dz);
+    if(dist < carRadius){
+      collided = true;
+      const push = (carRadius-dist)+0.05;
+      const len = dist||0.001;
+      nx += (dx/len)*push;
+      nz += (dz/len)*push;
+      player.speed *= -0.25;
+    }
+  }
+  if(collided){
+    crashFlash.style.opacity = 0.35;
+    setTimeout(()=> crashFlash.style.opacity = 0, 100);
+    if(Math.random()<0.3) beep(120,0.15,'square');
+  }
+
+  player.x = nx; player.z = nz;
+  player.mesh.position.set(player.x, 0, player.z);
+  player.mesh.rotation.y = player.angle;
+
+  speedEl.textContent = 'السرعة: ' + Math.round(Math.abs(player.speed)*3.6) + ' كم/س';
+}
+
+function updateTraffic(dt){
+  if(trafficCrimeCooldown>0) trafficCrimeCooldown -= dt;
+  for(const t of traffic){
+    if(t.horizontal){
+      t.x += t.dir*t.speed*dt;
+      if(t.x> half) t.x = -half;
+      if(t.x< -half) t.x = half;
+      t.mesh.position.set(t.x,0,t.z);
+      t.mesh.rotation.y = t.dir>0 ? Math.PI/2 : -Math.PI/2;
+    } else {
+      t.z += t.dir*t.speed*dt;
+      if(t.z> half) t.z = -half;
+      if(t.z< -half) t.z = half;
+      t.mesh.position.set(t.x,0,t.z);
+      t.mesh.rotation.y = t.dir>0 ? 0 : Math.PI;
+    }
+
+    // تصادم مع سيارة اللاعب -> يرفع المطلوبية
+    const pdx = player.x-t.x, pdz = player.z-t.z;
+    const pdist = Math.sqrt(pdx*pdx+pdz*pdz);
+    if(pdist < 4.0 && trafficCrimeCooldown<=0){
+      trafficCrimeCooldown = 1.0;
+      registerCrime(1);
+      player.speed *= -0.3;
+      const len = pdist||0.001;
+      player.x += (pdx/len)*0.4;
+      player.z += (pdz/len)*0.4;
+      crashFlash.style.opacity = 0.35;
+      setTimeout(()=> crashFlash.style.opacity = 0, 100);
+      beep(150,0.15,'square');
+    }
+  }
+}
+
+function updateCoins(dt){
+  for(let i=coins.length-1;i>=0;i--){
+    const c = coins[i];
+    c.mesh.rotation.z += dt*2;
+    const dx = player.x-c.x, dz = player.z-c.z;
+    if(Math.sqrt(dx*dx+dz*dz) < 2.5){
+      scene.remove(c.mesh);
+      coins.splice(i,1);
+      score += 10;
+      scoreEl.textContent = '💰 النقاط: ' + score;
+      beep(880,0.12); beep(1200,0.1,'triangle');
+      spawnCoin();
+    }
+  }
+}
+
+/* الكاميرا */
+const camOffset = new THREE.Vector3();
+function updateCamera(dt){
+  const fx = Math.sin(player.angle), fz = Math.cos(player.angle);
+  const desired = new THREE.Vector3(
+    player.x - fx*9,
+    5.5,
+    player.z - fz*9
+  );
+  camera.position.lerp(desired, 1-Math.pow(0.001,dt));
+  const lookAt = new THREE.Vector3(player.x+fx*4, 1.2, player.z+fz*4);
+  camera.lookAt(lookAt);
+}
+
+/* الخريطة المصغرة */
+const mmCanvas = document.getElementById('minimap');
+const mmCtx = mmCanvas.getContext('2d');
+function drawMinimap(){
+  const size = mmCanvas.width;
+  const scale = size/(half*2.4);
+  mmCtx.clearRect(0,0,size,size);
+  mmCtx.fillStyle = 'rgba(20,20,25,0.9)';
+  mmCtx.fillRect(0,0,size,size);
+  mmCtx.save();
+  mmCtx.translate(size/2, size/2);
+  // مباني
+  mmCtx.fillStyle = '#6a6a75';
+  for(const b of buildings){
+    const rx = (b.x-player.x)*scale;
+    const rz = (b.z-player.z)*scale;
+    mmCtx.fillRect(rx-2, rz-2, 4,4);
+  }
+  // عملات
+  mmCtx.fillStyle = '#ffd700';
+  for(const c of coins){
+    const rx = (c.x-player.x)*scale;
+    const rz = (c.z-player.z)*scale;
+    mmCtx.beginPath(); mmCtx.arc(rx,rz,2,0,Math.PI*2); mmCtx.fill();
+  }
+  // مرور
+  mmCtx.fillStyle = '#66aaff';
+  for(const t of traffic){
+    const rx = (t.x-player.x)*scale;
+    const rz = (t.z-player.z)*scale;
+    mmCtx.beginPath(); mmCtx.arc(rx,rz,2.5,0,Math.PI*2); mmCtx.fill();
+  }
+  // شرطة
+  mmCtx.fillStyle = '#ff2222';
+  for(const p of policeCars){
+    const rx = (p.x-player.x)*scale;
+    const rz = (p.z-player.z)*scale;
+    mmCtx.beginPath(); mmCtx.arc(rx,rz,3,0,Math.PI*2); mmCtx.fill();
+  }
+  mmCtx.restore();
+  // اللاعب في المركز (سهم)
+  mmCtx.save();
+  mmCtx.translate(size/2,size/2);
+  mmCtx.rotate(player.angle);
+  mmCtx.fillStyle = '#ff3333';
+  mmCtx.beginPath();
+  mmCtx.moveTo(0,-6); mmCtx.lineTo(4,6); mmCtx.lineTo(-4,6); mmCtx.closePath();
+  mmCtx.fill();
+  mmCtx.restore();
+}
+
+function animate(){
+  requestAnimationFrame(animate);
+  const dt = Math.min(0.05, clock.getDelta());
+  if(running){
+    updatePlayer(dt);
+    updateTraffic(dt);
+    updateCoins(dt);
+    updateWanted(dt);
+    updatePolice(dt, clock.elapsedTime);
+    updateCamera(dt);
+    drawMinimap();
+  }
+  renderer.render(scene, camera);
+}
+animate();
+
+document.getElementById('startBtn').addEventListener('click', ()=>{
+  document.getElementById('instructions').style.display='none';
+  running = true;
+});
+</script>
+</body>
+</html>
